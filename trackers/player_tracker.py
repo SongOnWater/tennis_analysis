@@ -13,6 +13,7 @@ class PlayerTracker:
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.logger = logging.getLogger(__name__)
         self.logger.info(f"PlayerTracker initialized with device: {self.device}")
+        self.fallback_id_counter = 0  # Counter for fallback IDs
         
     def _load_model(self):
         if self.model is None:
@@ -137,21 +138,63 @@ class PlayerTracker:
         # Load model if not already loaded
         if self.model is None:
             self._load_model()
-            
+
         results = self.model.track(frame, persist=True, device=self.device)[0]
         id_name_dict = results.names
 
         player_dict = {}
         for box in results.boxes:
-            track_id = int(box.id.tolist()[0])
-            result = box.xyxy.tolist()[0]
-            confidence = box.conf.tolist()[0]
-            object_cls_id = box.cls.tolist()[0]
+            # Null-safe ID extraction
+            if box.id is not None:
+                try:
+                    track_id = int(box.id.tolist()[0])
+                except Exception as e:
+                    self.logger.warning(f"Failed to extract track_id from box.id: {e}. Using fallback ID.")
+                    track_id = self.fallback_id_counter
+                    self.fallback_id_counter += 1
+                    self.logger.debug(f"Assigned fallback track_id: {track_id}")
+            else:
+                self.logger.warning("box.id is None. Using fallback ID.")
+                track_id = self.fallback_id_counter
+                self.fallback_id_counter += 1
+                self.logger.debug(f"Assigned fallback track_id: {track_id}")
+
+            # Null checks for other attributes
+            if box.xyxy is not None:
+                try:
+                    result = box.xyxy.tolist()[0]
+                except Exception as e:
+                    self.logger.warning(f"Failed to extract xyxy from box.xyxy: {e}. Skipping box.")
+                    continue
+            else:
+                self.logger.warning("box.xyxy is None. Skipping box.")
+                continue
+
+            if box.conf is not None:
+                try:
+                    confidence = box.conf.tolist()[0]
+                except Exception as e:
+                    self.logger.warning(f"Failed to extract conf from box.conf: {e}. Skipping box.")
+                    continue
+            else:
+                self.logger.warning("box.conf is None. Skipping box.")
+                continue
+
+            if box.cls is not None:
+                try:
+                    object_cls_id = box.cls.tolist()[0]
+                except Exception as e:
+                    self.logger.warning(f"Failed to extract cls from box.cls: {e}. Skipping box.")
+                    continue
+            else:
+                self.logger.warning("box.cls is None. Skipping box.")
+                continue
+
             object_cls_name = id_name_dict[object_cls_id]
             if object_cls_name == "person":
                 player_dict[track_id] = result + [confidence]
                 self.logger.debug(f"Player ID: {track_id}, Confidence: {confidence:.2f}")
-        
+
         return player_dict
 
     def draw_bboxes(self, video_frames, player_detections):
