@@ -30,15 +30,13 @@ class MiniCourt:
         
     def convert_bounding_boxes_to_mini_court_coordinates(self, player_boxes, ball_boxes, court_keypoints):
         self.logger.info("转换边界框到迷你球场坐标...")
-        player_height = {
-            1: court_keypoints[1]-court_keypoints[5],
-            2: court_keypoints[1]-court_keypoints[5]
-        }
-
         output_player_boxes = []
         output_ball_boxes = []
 
         for i in range(len(player_boxes)):
+            player_height = {1: court_keypoints[1]-court_keypoints[5]}  # 默认包含键1
+            for player_id in player_boxes[i].keys():
+                player_height[player_id] = court_keypoints[1]-court_keypoints[5]
             output_player_bboxes_dict = {}
             for player_id in player_boxes[i].keys():
                 # 获取球员脚部位置
