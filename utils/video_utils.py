@@ -3,17 +3,41 @@ import cv2
 def read_video(video_path):
     cap = cv2.VideoCapture(video_path)
     frames = []
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        frames.append(frame)
+    
+    # 获取视频总帧数
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    
+    # 导入进度条库
+    from tqdm import tqdm
+    
+    # 创建进度条
+    with tqdm(total=total_frames, desc="读取视频", unit="帧") as pbar:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            frames.append(frame)
+            pbar.update(1)
+    
     cap.release()
     return frames
 
 def save_video(output_video_frames, output_video_path):
+    # 检查是否有帧可以保存
+    if not output_video_frames:
+        print(f"警告：没有视频帧可以保存到 {output_video_path}")
+        return
+        
     fourcc = cv2.VideoWriter_fourcc(*'MJPG')
     out = cv2.VideoWriter(output_video_path, fourcc, 24, (output_video_frames[0].shape[1], output_video_frames[0].shape[0]))
-    for frame in output_video_frames:
+    
+    # 导入进度条库
+    from tqdm import tqdm
+    
+    # 创建进度条
+    print("保存视频中...")
+    for frame in tqdm(output_video_frames, desc="保存视频", unit="帧"):
         out.write(frame)
+    
     out.release()
+    print(f"视频已保存到 {output_video_path}")

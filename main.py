@@ -11,26 +11,134 @@ from mini_court import MiniCourt
 import cv2
 import pandas as pd
 from copy import deepcopy
+import argparse
+import os
 
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='网球分析工具')
+    parser.add_argument('--input', '-i', type=str, default="input_videos/input_video.mp4",
+                        help='输入视频文件路径')
+    parser.add_argument('--output', '-o', type=str, default="output_videos/output_video.avi",
+                        help='输出视频文件路径')
+    parser.add_argument('--use-stub', type=lambda x: (str(x).lower() in ('true', 't', 'yes', 'y', '1')), default=True,
+                        help='是否使用缓存的检测结果 (True/False)')
+    return parser.parse_args()
 
 def main():
+    # 设置日志
+    import logging
+    log_file = os.path.join(os.path.dirname(__file__), 'tennis_analysis.log')
+    # 兼容低版本 Python 的日志配置
+    log_file = open('tennis_analysis.log', 'a', encoding='utf-8')
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        stream=log_file,
+        filemode='w'
+    )
+    logger = logging.getLogger()
+    
+    # 同时输出到控制台
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+    
+    # 解析命令行参数
+    args = parse_args()
+    print(f"命令行参数: input={args.input}, output={args.output}, use_stub={args.use_stub} (类型: {type(args.use_stub)})")
+    logger.info(f"命令行参数: input={args.input}, output={args.output}, use_stub={args.use_stub} (类型: {type(args.use_stub)})")
+    
+    # 确保输出目录存在
+    output_dir = os.path.dirname(args.output)
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+        print(f"创建输出目录: {output_dir}")
+    
     # Read Video
-    input_video_path = "input_videos/input_video.mp4"
+    input_video_path = args.input
+    print(f"读取输入视频: {input_video_path}")
     video_frames = read_video(input_video_path)
+
+    # Check if CUDA is available
+    import torch
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    print(f"Main process using device: {device}")
 
     # Detect Players and Ball
     player_tracker = PlayerTracker(model_path='yolov8x')
     ball_tracker = BallTracker(model_path='models/yolo5_last.pt')
 
-    player_detections = player_tracker.detect_frames(video_frames,
-                                                     read_from_stub=True,
-                                                     stub_path="tracker_stubs/player_detections.pkl"
-                                                     )
-    ball_detections = ball_tracker.detect_frames(video_frames,
-                                                     read_from_stub=True,
-                                                     stub_path="tracker_stubs/ball_detections.pkl"
-                                                     )
-    ball_detections = ball_tracker.interpolate_ball_positions(ball_detections)
+    try:
+        player_detections = player_tracker.detect_frames(video_frames,
+                                                        read_from_stub=args.use_stub,
+                                                        stub_path="tracker_stubs/player_detections.pkl"
+                                                        )
+        if not player_detections:
+            if args.use_stub:
+                print("警告: 球员检测失败，尝试使用缓存数据...")
+                try:
+                    with open("tracker_stubs/player_detections.pkl", 'rb') as f:
+                        player_detections = pickle.load(f)
+                    print("成功加载球员检测缓存数据")
+                except Exception as e:
+                    print(f"无法加载球员检测缓存数据: {e}")
+                    print("将继续处理，但可能影响分析结果")
+            else:
+                print("警告: 球员检测失败，且未启用缓存数据模式")
+                print("将继续处理，但可能影响分析结果")
+    except Exception as e:
+        print(f"球员检测过程中出错: {e}")
+        print("尝试使用缓存数据...")
+        try:
+            with open("tracker_stubs/player_detections.pkl", 'rb') as f:
+                player_detections = pickle.load(f)
+            print("成功加载球员检测缓存数据")
+        except Exception as backup_error:
+            print(f"无法加载球员检测缓存数据: {backup_error}")
+            player_detections = []
+            print("警告: 球员检测失败，检查输入视频或模型配置")
+            print("将继续处理，但可能影响分析结果")
+    try:
+        ball_detections = ball_tracker.detect_frames(video_frames,
+                                                    read_from_stub=args.use_stub,
+                                                    stub_path="tracker_stubs/ball_detections.pkl"
+                                                    )
+        if not ball_detections:
+            if args.use_stub:
+                print("警告: 球检测失败，尝试使用缓存数据...")
+                try:
+                    with open("tracker_stubs/ball_detections.pkl", 'rb') as f:
+                        ball_detections = pickle.load(f)
+                    print("成功加载球检测缓存数据")
+                except Exception as e:
+                    print(f"无法加载球检测缓存数据: {e}")
+                    print("将继续处理，但可能影响分析结果")
+            else:
+                print("警告: 球检测失败，且未启用缓存数据模式")
+                print("将继续处理，但可能影响分析结果")
+                ball_detections = []  # 确保 ball_detections 不为 None
+    except Exception as e:
+        print(f"球检测过程中出错: {e}")
+        print("尝试使用缓存数据...")
+        try:
+            with open("tracker_stubs/ball_detections.pkl", 'rb') as f:
+                ball_detections = pickle.load(f)
+            print("成功加载球检测缓存数据")
+        except Exception as backup_error:
+            print(f"无法加载球检测缓存数据: {backup_error}")
+            ball_detections = []
+            print("将继续处理，但可能影响分析结果")
+    
+    # 只有在球检测数据不为空时才进行插值
+    if ball_detections:
+        try:
+            ball_detections = ball_tracker.interpolate_ball_positions(ball_detections)
+        except Exception as e:
+            print(f"球轨迹插值过程中出错: {e}")
+            print("将使用原始球检测数据")
     
     
     # Court Line Detector model
@@ -52,20 +160,29 @@ def main():
                                                                                                           ball_detections,
                                                                                                           court_keypoints)
 
+    # 获取所有球员ID
+    first_frame_with_players = 0
+    player_ids = []  # 初始化为空列表，确保即使没有检测到球员也有定义
+    
+    for i, frame_data in enumerate(player_mini_court_detections):
+        if frame_data:  # 如果有球员数据
+            first_frame_with_players = i
+            player_ids = list(frame_data.keys())
+            break
+    
+    # 初始化球员统计数据
     player_stats_data = [{
-        'frame_num':0,
-        'player_1_number_of_shots':0,
-        'player_1_total_shot_speed':0,
-        'player_1_last_shot_speed':0,
-        'player_1_total_player_speed':0,
-        'player_1_last_player_speed':0,
-
-        'player_2_number_of_shots':0,
-        'player_2_total_shot_speed':0,
-        'player_2_last_shot_speed':0,
-        'player_2_total_player_speed':0,
-        'player_2_last_player_speed':0,
-    } ]
+        'frame_num': 0,
+    }]
+    
+    # 为每个球员添加统计字段
+    if player_ids:  # 只有在有球员ID时才添加统计字段
+        for player_id in player_ids:
+            player_stats_data[0][f'player_{player_id}_number_of_shots'] = 0
+            player_stats_data[0][f'player_{player_id}_total_shot_speed'] = 0
+            player_stats_data[0][f'player_{player_id}_last_shot_speed'] = 0
+            player_stats_data[0][f'player_{player_id}_total_player_speed'] = 0
+            player_stats_data[0][f'player_{player_id}_last_player_speed'] = 0
     
     for ball_shot_ind in range(len(ball_shot_frames)-1):
         start_frame = ball_shot_frames[ball_shot_ind]
@@ -85,11 +202,42 @@ def main():
 
         # player who the ball
         player_positions = player_mini_court_detections[start_frame]
-        player_shot_ball = min( player_positions.keys(), key=lambda player_id: measure_distance(player_positions[player_id],
-                                                                                                 ball_mini_court_detections[start_frame][1]))
-
+        
+        # 获取所有球员ID
+        player_ids = list(player_mini_court_detections[start_frame].keys())
+        
+        # 检查是否有球员
+        if not player_ids:
+            print(f"警告：在帧 {start_frame} 中没有检测到球员，跳过此帧")
+            continue
+            
+        # 确定击球的球员
+        player_shot_ball = min(player_positions.keys(), key=lambda player_id: measure_distance(player_positions[player_id],
+                                                                                               ball_mini_court_detections[start_frame][1]))
+        
+        # 检查球员数量
+        if len(player_ids) < 2:
+            print(f"警告：在帧 {start_frame} 中检测到的球员少于2个，跳过此帧")
+            continue
+            
+        # 确保我们有两个球员ID
+        if player_shot_ball not in player_ids:
+            print(f"警告：在帧 {start_frame} 中未找到击球球员ID {player_shot_ball}，使用第一个检测到的球员")
+            player_shot_ball = player_ids[0]
+            
+        # 找到对手ID（不是击球球员的另一个球员）
+        opponent_player_ids = [pid for pid in player_ids if pid != player_shot_ball]
+        if not opponent_player_ids:
+            print(f"警告：在帧 {start_frame} 中未找到对手球员，跳过此帧")
+            continue
+        opponent_player_id = opponent_player_ids[0]
+        
+        # 确保在结束帧中也有这两个球员
+        if opponent_player_id not in player_mini_court_detections[end_frame]:
+            print(f"警告：在帧 {end_frame} 中未找到对手球员ID {opponent_player_id}，跳过此帧")
+            continue
+            
         # opponent player speed
-        opponent_player_id = 1 if player_shot_ball == 2 else 2
         distance_covered_by_opponent_pixels = measure_distance(player_mini_court_detections[start_frame][opponent_player_id],
                                                                 player_mini_court_detections[end_frame][opponent_player_id])
         distance_covered_by_opponent_meters = convert_pixel_distance_to_meters( distance_covered_by_opponent_pixels,
@@ -115,34 +263,104 @@ def main():
     player_stats_data_df = pd.merge(frames_df, player_stats_data_df, on='frame_num', how='left')
     player_stats_data_df = player_stats_data_df.ffill()
 
-    player_stats_data_df['player_1_average_shot_speed'] = player_stats_data_df['player_1_total_shot_speed']/player_stats_data_df['player_1_number_of_shots']
-    player_stats_data_df['player_2_average_shot_speed'] = player_stats_data_df['player_2_total_shot_speed']/player_stats_data_df['player_2_number_of_shots']
-    player_stats_data_df['player_1_average_player_speed'] = player_stats_data_df['player_1_total_player_speed']/player_stats_data_df['player_2_number_of_shots']
-    player_stats_data_df['player_2_average_player_speed'] = player_stats_data_df['player_2_total_player_speed']/player_stats_data_df['player_1_number_of_shots']
+    # 为每个球员计算平均速度
+    if player_ids:  # 只有在有球员ID时才计算
+        for player_id in player_ids:
+            # 避免除以零错误
+            shots_column = f'player_{player_id}_number_of_shots'
+            if shots_column in player_stats_data_df.columns and player_stats_data_df[shots_column].max() > 0:
+                player_stats_data_df[f'player_{player_id}_average_shot_speed'] = player_stats_data_df[f'player_{player_id}_total_shot_speed'] / player_stats_data_df[shots_column]
+            else:
+                player_stats_data_df[f'player_{player_id}_average_shot_speed'] = 0
+                
+        # 计算球员平均移动速度
+        if len(player_ids) > 0:  # 确保有球员
+            for i, player_id in enumerate(player_ids):
+                other_player_id = player_ids[(i+1) % len(player_ids)]  # 获取另一个球员的ID
+        shots_column = f'player_{other_player_id}_number_of_shots'
+        if shots_column in player_stats_data_df.columns and player_stats_data_df[shots_column].max() > 0:
+            player_stats_data_df[f'player_{player_id}_average_player_speed'] = player_stats_data_df[f'player_{player_id}_total_player_speed'] / player_stats_data_df[shots_column]
+        else:
+            player_stats_data_df[f'player_{player_id}_average_player_speed'] = 0
 
 
 
     # Draw output
+    from tqdm import tqdm
+    print("开始绘制输出视频...")
+    
+    # 检查是否有视频帧
+    if not video_frames:
+        print("警告：没有输入视频帧，无法生成输出视频")
+        return
+        
+    # 创建输出视频帧的副本
+    output_video_frames = video_frames.copy()
+    
     ## Draw Player Bounding Boxes
-    output_video_frames= player_tracker.draw_bboxes(video_frames, player_detections)
-    output_video_frames= ball_tracker.draw_bboxes(output_video_frames, ball_detections)
+    print("绘制球员边界框...")
+    if player_detections:
+        output_video_frames = player_tracker.draw_bboxes(output_video_frames, player_detections)
+    else:
+        print("警告：没有球员检测结果，跳过绘制球员边界框")
+    
+    print("绘制网球边界框...")
+    if ball_detections:
+        output_video_frames = ball_tracker.draw_bboxes(output_video_frames, ball_detections)
+    else:
+        logger.warning("没有网球检测结果，跳过绘制网球边界框")
 
     ## Draw court Keypoints
-    output_video_frames  = court_line_detector.draw_keypoints_on_video(output_video_frames, court_keypoints)
+    logger.info("绘制球场关键点...")
+    if court_keypoints is not None and len(court_keypoints) > 0:
+        output_video_frames = court_line_detector.draw_keypoints_on_video(output_video_frames, court_keypoints)
+    else:
+        logger.warning("没有球场关键点检测结果，跳过绘制球场关键点")
 
     # Draw Mini Court
+    print("绘制迷你球场...")
     output_video_frames = mini_court.draw_mini_court(output_video_frames)
-    output_video_frames = mini_court.draw_points_on_mini_court(output_video_frames,player_mini_court_detections)
-    output_video_frames = mini_court.draw_points_on_mini_court(output_video_frames,ball_mini_court_detections, color=(0,255,255))    
+    
+    # 绘制球员在迷你球场上的位置
+    if player_mini_court_detections:
+        output_video_frames = mini_court.draw_points_on_mini_court(output_video_frames, player_mini_court_detections)
+    else:
+        print("警告：没有球员在迷你球场上的位置数据，跳过绘制")
+        
+    # 绘制球在迷你球场上的位置
+    if ball_mini_court_detections:
+        output_video_frames = mini_court.draw_points_on_mini_court(output_video_frames, ball_mini_court_detections, color=(0,255,255))
+    else:
+        print("警告：没有球在迷你球场上的位置数据，跳过绘制")
 
+    # 确保有输出视频帧
+    if not output_video_frames:
+        print("警告：没有输出视频帧，无法继续处理")
+        return
+        
+    # 确保 player_stats_data_df 的行数与 output_video_frames 的长度一致
+    if len(output_video_frames) != len(player_stats_data_df):
+        print(f"警告：视频帧数 ({len(output_video_frames)}) 与统计数据行数 ({len(player_stats_data_df)}) 不匹配，将截断或填充统计数据")
+        min_length = min(len(output_video_frames), len(player_stats_data_df))
+        player_stats_data_df = player_stats_data_df.iloc[:min_length]
+        output_video_frames = output_video_frames[:min_length]
+    
     # Draw Player Stats
-    output_video_frames = draw_player_stats(output_video_frames,player_stats_data_df)
+    print("绘制球员统计数据...")
+    if not player_stats_data_df.empty and len(output_video_frames) > 0:
+        output_video_frames = draw_player_stats(output_video_frames, player_stats_data_df)
+    else:
+        print("警告：没有球员统计数据或没有视频帧，跳过绘制球员统计数据")
 
     ## Draw frame number on top left corner
-    for i, frame in enumerate(output_video_frames):
-        cv2.putText(frame, f"Frame: {i}",(10,30),cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+    print("添加帧编号...")
+    if output_video_frames:
+        for i, frame in enumerate(tqdm(output_video_frames, desc="处理视频帧", unit="帧")):
+            cv2.putText(frame, f"Frame: {i}",(10,30),cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+    else:
+        print("警告：没有视频帧，跳过添加帧编号")
 
-    save_video(output_video_frames, "output_videos/output_video.avi")
+    save_video(output_video_frames, args.output)
 
 if __name__ == "__main__":
     main()

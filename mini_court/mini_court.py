@@ -196,8 +196,27 @@ class MiniCourt():
         output_ball_boxes= []
 
         for frame_num, player_bbox in enumerate(player_boxes):
+            # 检查是否有球的检测结果，以及是否有足够的元素
+            if frame_num >= len(ball_boxes) or len(ball_boxes[frame_num]) <= 1:
+                # 如果没有球的检测结果或索引不足，跳过当前帧或使用默认值
+                output_player_bboxes_dict = {}
+                for player_id, bbox in player_bbox.items():
+                    # 使用球员位置作为默认值
+                    foot_position = get_foot_position(bbox)
+                    output_player_bboxes_dict[player_id] = (0, 0)  # 使用默认坐标
+                output_player_boxes.append(output_player_bboxes_dict)
+                output_ball_boxes.append({1: (0, 0)})  # 使用默认坐标
+                continue
+                
             ball_box = ball_boxes[frame_num][1]
             ball_position = get_center_of_bbox(ball_box)
+            
+            # 确保player_bbox不为空
+            if not player_bbox:
+                output_player_boxes.append({})
+                output_ball_boxes.append({1: (0, 0)})  # 使用默认坐标
+                continue
+                
             closest_player_id_to_ball = min(player_bbox.keys(), key=lambda x: measure_distance(ball_position, get_center_of_bbox(player_bbox[x])))
 
             output_player_bboxes_dict = {}
@@ -215,11 +234,14 @@ class MiniCourt():
                 bboxes_heights_in_pixels = [get_height_of_bbox(player_boxes[i][player_id]) for i in range (frame_index_min,frame_index_max)]
                 max_player_height_in_pixels = max(bboxes_heights_in_pixels)
 
+                # 使用默认身高值，如果球员ID不在预设值中
+                player_height = player_heights.get(player_id, 1.85)  # 默认身高1.85米
+                
                 mini_court_player_position = self.get_mini_court_coordinates(foot_position,
                                                                             closest_key_point, 
                                                                             closest_key_point_index, 
                                                                             max_player_height_in_pixels,
-                                                                            player_heights[player_id]
+                                                                            player_height
                                                                             )
                 
                 output_player_bboxes_dict[player_id] = mini_court_player_position
@@ -230,11 +252,14 @@ class MiniCourt():
                     closest_key_point = (original_court_key_points[closest_key_point_index*2], 
                                         original_court_key_points[closest_key_point_index*2+1])
                     
+                    # 使用默认身高值，如果球员ID不在预设值中
+                    player_height = player_heights.get(player_id, 1.85)  # 默认身高1.85米
+                    
                     mini_court_player_position = self.get_mini_court_coordinates(ball_position,
                                                                             closest_key_point, 
                                                                             closest_key_point_index, 
                                                                             max_player_height_in_pixels,
-                                                                            player_heights[player_id]
+                                                                            player_height
                                                                             )
                     output_ball_boxes.append({1:mini_court_player_position})
             output_player_boxes.append(output_player_bboxes_dict)

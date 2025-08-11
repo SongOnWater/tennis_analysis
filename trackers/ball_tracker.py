@@ -1,16 +1,50 @@
-from ultralytics import YOLO 
 import cv2
 import pickle
 import pandas as pd
+import torch
 
 class BallTracker:
     def __init__(self,model_path):
-        self.model = YOLO(model_path)
+        self.model_path = model_path
+        self.model = None
+        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        print(f"BallTracker initialized with device: {self.device}")
+        
+    def _load_model(self):
+        if self.model is None:
+            try:
+                # 深度清理模块环境
+                import sys
+                for module in ['charset_normalizer', 'chardet', 'requests', 'urllib3', 'ultralytics']:
+                    if module in sys.modules:
+                        del sys.modules[module]
+                
+                # 确保从干净环境导入
+                from importlib import reload
+                import ultralytics
+                reload(ultralytics)
+                
+                from ultralytics import YOLO
+                self.model = YOLO(self.model_path)
+                print(f"BallTracker model successfully loaded on device: {self.device}")
+            except Exception as e:
+                print(f"CRITICAL ERROR loading YOLO model: {e}")
+                raise
 
     def interpolate_ball_positions(self, ball_positions):
-        ball_positions = [x.get(1,[]) for x in ball_positions]
+        ball_data = []
+        for x in ball_positions:
+            bbox = x.get(1, [])
+            # Handle both cases: with and without confidence value
+            if len(bbox) >= 4:
+                # Take only the first 4 elements (x1, y1, x2, y2)
+                ball_data.append(bbox[:4])
+            else:
+                # If less than 4 elements, pad with zeros
+                ball_data.append(bbox + [0] * (4 - len(bbox)))
+                
         # convert the list into pandas dataframe
-        df_ball_positions = pd.DataFrame(ball_positions,columns=['x1','y1','x2','y2'])
+        df_ball_positions = pd.DataFrame(ball_data, columns=['x1','y1','x2','y2'])
 
         # interpolate the missing values
         df_ball_positions = df_ball_positions.interpolate()
@@ -21,9 +55,19 @@ class BallTracker:
         return ball_positions
 
     def get_ball_shot_frames(self,ball_positions):
-        ball_positions = [x.get(1,[]) for x in ball_positions]
+        ball_data = []
+        for x in ball_positions:
+            bbox = x.get(1, [])
+            # Handle both cases: with and without confidence value
+            if len(bbox) >= 4:
+                # Take only the first 4 elements (x1, y1, x2, y2)
+                ball_data.append(bbox[:4])
+            else:
+                # If less than 4 elements, pad with zeros
+                ball_data.append(bbox + [0] * (4 - len(bbox)))
+                
         # convert the list into pandas dataframe
-        df_ball_positions = pd.DataFrame(ball_positions,columns=['x1','y1','x2','y2'])
+        df_ball_positions = pd.DataFrame(ball_data, columns=['x1','y1','x2','y2'])
 
         df_ball_positions['ball_hit'] = 0
 
@@ -47,7 +91,8 @@ class BallTracker:
                         change_count+=1
             
                 if change_count>minimum_change_frames_for_hit-1:
-                    df_ball_positions['ball_hit'].iloc[i] = 1
+                    # Use .loc instead of chained assignment to avoid pandas warnings
+                    df_ball_positions.loc[i, 'ball_hit'] = 1
 
         frame_nums_with_ball_hits = df_ball_positions[df_ball_positions['ball_hit']==1].index.tolist()
 
@@ -61,7 +106,9 @@ class BallTracker:
                 ball_detections = pickle.load(f)
             return ball_detections
 
-        for frame in frames:
+        total_frames = len(frames)
+        from tqdm import tqdm
+        for i, frame in enumerate(tqdm(frames, desc="检测网球", unit="帧")):
             player_dict = self.detect_frame(frame)
             ball_detections.append(player_dict)
         
@@ -72,12 +119,18 @@ class BallTracker:
         return ball_detections
 
     def detect_frame(self,frame):
-        results = self.model.predict(frame,conf=0.15)[0]
+        # Load model if not already loaded
+        if self.model is None:
+            self._load_model()
+            
+        results = self.model.predict(frame, conf=0.15, device=self.device)[0]
 
         ball_dict = {}
         for box in results.boxes:
             result = box.xyxy.tolist()[0]
-            ball_dict[1] = result
+            confidence = box.conf.tolist()[0]
+            ball_dict[1] = result + [confidence]
+            print(f"Ball ID: 1, Confidence: {confidence:.2f}")
         
         return ball_dict
 
@@ -86,8 +139,8 @@ class BallTracker:
         for frame, ball_dict in zip(video_frames, player_detections):
             # Draw Bounding Boxes
             for track_id, bbox in ball_dict.items():
-                x1, y1, x2, y2 = bbox
-                cv2.putText(frame, f"Ball ID: {track_id}",(int(bbox[0]),int(bbox[1] -10 )),cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2)
+                x1, y1, x2, y2 = bbox  # bbox 只包含坐标值
+                cv2.putText(frame, f"Ball ID: {track_id}",(int(x1),int(y1 -10 )),cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2)
                 cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 255), 2)
             output_video_frames.append(frame)
         
