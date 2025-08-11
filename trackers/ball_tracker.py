@@ -2,13 +2,15 @@ import cv2
 import pickle
 import pandas as pd
 import torch
+import logging
 
 class BallTracker:
     def __init__(self,model_path):
         self.model_path = model_path
         self.model = None
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        print(f"BallTracker initialized with device: {self.device}")
+        self.logger = logging.getLogger()
+        self.logger.info(f"BallTracker initialized with device: {self.device}")
         
     def _load_model(self):
         if self.model is None:
@@ -26,9 +28,9 @@ class BallTracker:
                 
                 from ultralytics import YOLO
                 self.model = YOLO(self.model_path)
-                print(f"BallTracker model successfully loaded on device: {self.device}")
+                self.logger.info(f"BallTracker model successfully loaded on device: {self.device}")
             except Exception as e:
-                print(f"CRITICAL ERROR loading YOLO model: {e}")
+                self.logger.error(f"CRITICAL ERROR loading YOLO model: {e}")
                 raise
 
     def interpolate_ball_positions(self, ball_positions):
@@ -55,6 +57,7 @@ class BallTracker:
         return ball_positions
 
     def get_ball_shot_frames(self,ball_positions):
+        self.logger.info("检测击球帧...")
         ball_data = []
         for x in ball_positions:
             bbox = x.get(1, [])
@@ -68,16 +71,15 @@ class BallTracker:
                 
         # convert the list into pandas dataframe
         df_ball_positions = pd.DataFrame(ball_data, columns=['x1','y1','x2','y2'])
+    
+        df_ball_positions['delta_y'] = df_ball_positions['y2'] - df_ball_positions['y1']  # 垂直移动距离
+        df_ball_positions['delta_y'] = df_ball_positions['delta_y'].diff()  # 相邻帧之间的变化
+        df_ball_positions['ball_hit'] = 0  # 添加标记列，标记击球帧
 
-        df_ball_positions['ball_hit'] = 0
-
-        df_ball_positions['mid_y'] = (df_ball_positions['y1'] + df_ball_positions['y2'])/2
-        df_ball_positions['mid_y_rolling_mean'] = df_ball_positions['mid_y'].rolling(window=5, min_periods=1, center=False).mean()
-        df_ball_positions['delta_y'] = df_ball_positions['mid_y_rolling_mean'].diff()
-        minimum_change_frames_for_hit = 25
-        for i in range(1,len(df_ball_positions)- int(minimum_change_frames_for_hit*1.2) ):
-            negative_position_change = df_ball_positions['delta_y'].iloc[i] >0 and df_ball_positions['delta_y'].iloc[i+1] <0
-            positive_position_change = df_ball_positions['delta_y'].iloc[i] <0 and df_ball_positions['delta_y'].iloc[i+1] >0
+        minimum_change_frames_for_hit = 4  # 击球的最小变化帧数
+        for i in range(1, len(df_ball_positions)-int(minimum_change_frames_for_hit*1.2) ):
+            negative_position_change = df_ball_positions['delta_y'].iloc[i] >0 and df_ball_positions['delta_y'].iloc[i+1] <0 and df_ball_positions['delta_y'].iloc[i+2] <0 and df_ball_positions['delta_y'].iloc[i+3] <0 and df_ball_positions['delta_y'].iloc[i+4] <0
+            positive_position_change = df_ball_positions['delta_y'].iloc[i] <0 and df_ball_positions['delta_y'].iloc[i+1] >0 and df_ball_positions['delta_y'].iloc[i+2] >0 and df_ball_positions['delta_y'].iloc[i+3] >0 and df_ball_positions['delta_y'].iloc[i+4] >0
 
             if negative_position_change or positive_position_change:
                 change_count = 0 
@@ -95,15 +97,17 @@ class BallTracker:
                     df_ball_positions.loc[i, 'ball_hit'] = 1
 
         frame_nums_with_ball_hits = df_ball_positions[df_ball_positions['ball_hit']==1].index.tolist()
-
+        self.logger.info(f"检测到 {len(frame_nums_with_ball_hits)} 个击球帧")
         return frame_nums_with_ball_hits
 
     def detect_frames(self,frames, read_from_stub=False, stub_path=None):
         ball_detections = []
+        self.logger.info(f"检测网球帧输入: frames={len(frames)} 帧, read_from_stub={read_from_stub}, stub_path={stub_path}")
 
         if read_from_stub and stub_path is not None:
             with open(stub_path, 'rb') as f:
                 ball_detections = pickle.load(f)
+            self.logger.info(f"从 stub 文件加载的网球检测结果: {len(ball_detections)} 帧")
             return ball_detections
 
         total_frames = len(frames)
@@ -130,21 +134,25 @@ class BallTracker:
             result = box.xyxy.tolist()[0]
             confidence = box.conf.tolist()[0]
             ball_dict[1] = result + [confidence]
-            print(f"Ball ID: 1, Confidence: {confidence:.2f}")
+            self.logger.debug(f"Ball detected with confidence: {confidence:.2f}")
         
         return ball_dict
 
-    def draw_bboxes(self,video_frames, player_detections):
+    def draw_bboxes(self,video_frames,ball_detections):
         output_video_frames = []
-        for frame, ball_dict in zip(video_frames, player_detections):
-            # Draw Bounding Boxes
+        for frame, ball_dict in zip(video_frames, ball_detections):
             for track_id, bbox in ball_dict.items():
-                x1, y1, x2, y2 = bbox  # bbox 只包含坐标值
-                cv2.putText(frame, f"Ball ID: {track_id}",(int(x1),int(y1 -10 )),cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2)
-                cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 255), 2)
+                if len(bbox) >= 5:  # Check if confidence is included
+                    x1, y1, x2, y2, confidence = bbox[:5]  # Extract first 5 values
+                    self.logger.debug(f"Ball Confidence: {confidence:.2f}")
+                    # 只绘制置信度大于0.5的球
+                    if confidence > 0.5:  
+                        cv2.putText(frame, f"Ball ID: {track_id}",(int(x1+5),int(y1-10)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                        cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 0, 255), 2)
+                else:  # Fallback if no confidence value
+                    x1, y1, x2, y2 = bbox
+                    cv2.putText(frame, f"Ball ID: {track_id}",(int(x1+5),int(y1-10)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                    cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 0, 255), 2)
             output_video_frames.append(frame)
         
         return output_video_frames
-
-
-    

@@ -1,11 +1,14 @@
 import cv2
+import logging
 
 def read_video(video_path):
+    logger = logging.getLogger()
     cap = cv2.VideoCapture(video_path)
     frames = []
     
     # 获取视频总帧数
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    logger.info(f"视频总帧数: {total_frames}")
     
     # 导入进度条库
     from tqdm import tqdm
@@ -20,12 +23,14 @@ def read_video(video_path):
             pbar.update(1)
     
     cap.release()
+    logger.info(f"成功读取 {len(frames)} 帧视频")
     return frames
 
 def save_video(output_video_frames, output_video_path):
+    logger = logging.getLogger()
     # 检查是否有帧可以保存
     if not output_video_frames:
-        print(f"警告：没有视频帧可以保存到 {output_video_path}")
+        logger.warning(f"警告：没有视频帧可以保存到 {output_video_path}")
         return
         
     fourcc = cv2.VideoWriter_fourcc(*'MJPG')
@@ -35,9 +40,9 @@ def save_video(output_video_frames, output_video_path):
     from tqdm import tqdm
     
     # 创建进度条
-    print("保存视频中...")
+    logger.info("保存视频中...")
     for frame in tqdm(output_video_frames, desc="保存视频", unit="帧"):
         out.write(frame)
     
     out.release()
-    print(f"视频已保存到 {output_video_path}")
+    logger.info(f"视频已保存到 {output_video_path}")
