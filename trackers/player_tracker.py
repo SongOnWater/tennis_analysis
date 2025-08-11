@@ -139,7 +139,7 @@ class PlayerTracker:
         if self.model is None:
             self._load_model()
 
-        results = self.model.track(frame, persist=True, device=self.device)[0]
+        results = self.model.track(frame, persist=False, device=self.device)[0]
         id_name_dict = results.names
 
         player_dict = {}
